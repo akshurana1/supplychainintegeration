@@ -12,12 +12,16 @@ be sent twice" requirement.  Two tables are used:
     been sent and what the WMS responded.  Before sending a batch, the
     sync service checks this table to skip already-processed SKUs.
 
-In local mode, an in-memory dictionary provides the same interface so
-the app can run without DynamoDB / LocalStack.
+In local mode, SQLite persists the state locally to disk (defaulting to
+``runtime/state.db``) so that runs can be inspected and resumed across
+separate process executions without requiring AWS DynamoDB.
 """
 
 from __future__ import annotations
 
+import os
+import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -71,19 +75,23 @@ class RunRecord:
 
 
 class StateStore:
-    """Abstraction over DynamoDB for run and item state tracking.
+    """Abstraction over DynamoDB (or SQLite locally) for run and item state.
 
-    In local mode, uses in-memory dicts.  In AWS mode, uses DynamoDB
-    via boto3 (works with LocalStack endpoint override).
+    In local mode, uses an on-disk SQLite database so state persists across
+    CLI runs, enabling local resumption via ``--resume <run_id>``.
+    In AWS mode, uses DynamoDB via boto3.
     """
 
     def __init__(self, settings: Optional[Settings] = None):
         self._settings = settings or get_settings()
         self._use_local = self._settings.USE_LOCAL_STORAGE
+        self._lock = threading.Lock()
 
         if self._use_local:
-            self._runs: Dict[str, Dict[str, Any]] = {}
-            self._items: Dict[str, Dict[str, Any]] = {}
+            db_dir = self._settings.EXPORT_DIR
+            os.makedirs(db_dir, exist_ok=True)
+            self._db_path = os.path.join(db_dir, "state.db")
+            self._init_sqlite()
         else:
             kwargs: Dict[str, Any] = {"region_name": self._settings.AWS_REGION}
             if self._settings.AWS_ENDPOINT_URL:
@@ -92,25 +100,68 @@ class StateStore:
             self._runs_table = self._dynamodb.Table(self._settings.DYNAMODB_TABLE_RUNS)
             self._items_table = self._dynamodb.Table(self._settings.DYNAMODB_TABLE_ITEMS)
 
+    def _init_sqlite(self) -> None:
+        """Initialize SQLite tables for local mode."""
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sync_runs (
+                    run_id TEXT PRIMARY KEY,
+                    status TEXT,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    s3_key TEXT,
+                    total_products INTEGER DEFAULT 0,
+                    total_accepted INTEGER DEFAULT 0,
+                    total_rejected INTEGER DEFAULT 0,
+                    total_failed INTEGER DEFAULT 0,
+                    last_export_page INTEGER DEFAULT 0,
+                    error TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sync_items (
+                    run_sku TEXT PRIMARY KEY,
+                    run_id TEXT,
+                    sku TEXT,
+                    status TEXT,
+                    batch_index INTEGER,
+                    reason TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_items_run ON sync_items(run_id, status)
+            """)
+            conn.commit()
+
     # ── Run operations ───────────────────────────────────────────────
 
     def create_run(self, run_id: str) -> RunRecord:
         """Create a new sync run record."""
         record = RunRecord(run_id=run_id)
-        item = {
-            "run_id": run_id,
-            "status": record.status.value,
-            "started_at": str(record.started_at),
-            "total_products": 0,
-            "total_accepted": 0,
-            "total_rejected": 0,
-            "total_failed": 0,
-            "last_export_page": 0,
-        }
 
         if self._use_local:
-            self._runs[run_id] = item
+            with self._lock, sqlite3.connect(self._db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO sync_runs
+                    (run_id, status, started_at, total_products, total_accepted,
+                     total_rejected, total_failed, last_export_page)
+                    VALUES (?, ?, ?, 0, 0, 0, 0, 0)
+                    """,
+                    (run_id, record.status.value, str(record.started_at)),
+                )
+                conn.commit()
         else:
+            item = {
+                "run_id": run_id,
+                "status": record.status.value,
+                "started_at": str(record.started_at),
+                "total_products": 0,
+                "total_accepted": 0,
+                "total_rejected": 0,
+                "total_failed": 0,
+                "last_export_page": 0,
+            }
             self._runs_table.put_item(Item=item)
 
         logger.info("run_created", run_id=run_id)
@@ -155,9 +206,14 @@ class StateStore:
             return
 
         if self._use_local:
-            if run_id not in self._runs:
-                raise KeyError(f"Run {run_id} not found")
-            self._runs[run_id].update(updates)
+            set_clauses = [f"{k} = ?" for k in updates.keys()]
+            values = list(updates.values()) + [run_id]
+            with self._lock, sqlite3.connect(self._db_path) as conn:
+                conn.execute(
+                    f"UPDATE sync_runs SET {', '.join(set_clauses)} WHERE run_id = ?",
+                    values,
+                )
+                conn.commit()
         else:
             expr_parts = []
             expr_values = {}
@@ -180,7 +236,12 @@ class StateStore:
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a run record by ID."""
         if self._use_local:
-            return self._runs.get(run_id)
+            with self._lock, sqlite3.connect(self._db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM sync_runs WHERE run_id = ?", (run_id,))
+                row = cursor.fetchone()
+                return dict(row) if row else None
 
         resp = self._runs_table.get_item(Key={"run_id": run_id})
         return resp.get("Item")
@@ -194,17 +255,30 @@ class StateStore:
         batch_index: int,
     ) -> None:
         """Mark a set of SKUs as sent to the WMS."""
-        for sku in skus:
-            item = {
-                "run_sku": f"{run_id}#{sku}",
-                "run_id": run_id,
-                "sku": sku,
-                "status": ItemStatus.SENT.value,
-                "batch_index": batch_index,
-            }
-            if self._use_local:
-                self._items[f"{run_id}#{sku}"] = item
-            else:
+        if self._use_local:
+            records = [
+                (f"{run_id}#{sku}", run_id, sku, ItemStatus.SENT.value, batch_index)
+                for sku in skus
+            ]
+            with self._lock, sqlite3.connect(self._db_path) as conn:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO sync_items
+                    (run_sku, run_id, sku, status, batch_index)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    records,
+                )
+                conn.commit()
+        else:
+            for sku in skus:
+                item = {
+                    "run_sku": f"{run_id}#{sku}",
+                    "run_id": run_id,
+                    "sku": sku,
+                    "status": ItemStatus.SENT.value,
+                    "batch_index": batch_index,
+                }
                 self._items_table.put_item(Item=item)
 
     def update_item_status(
@@ -217,10 +291,18 @@ class StateStore:
         """Update the status of a single product within a run."""
         key = f"{run_id}#{sku}"
         if self._use_local:
-            if key in self._items:
-                self._items[key]["status"] = status.value
+            with self._lock, sqlite3.connect(self._db_path) as conn:
                 if reason:
-                    self._items[key]["reason"] = reason
+                    conn.execute(
+                        "UPDATE sync_items SET status = ?, reason = ? WHERE run_sku = ?",
+                        (status.value, reason, key),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE sync_items SET status = ? WHERE run_sku = ?",
+                        (status.value, key),
+                    )
+                conn.commit()
         else:
             update_expr = "SET #s = :s"
             expr_names = {"#s": "status"}
@@ -243,14 +325,16 @@ class StateStore:
         already successfully processed (e.g. in a previous attempt before
         a crash).
         """
-        sent_statuses = {ItemStatus.SENT.value, ItemStatus.ACCEPTED.value}
+        sent_statuses = (ItemStatus.SENT.value, ItemStatus.ACCEPTED.value)
 
         if self._use_local:
-            return {
-                v["sku"]
-                for v in self._items.values()
-                if v.get("run_id") == run_id and v.get("status") in sent_statuses
-            }
+            with self._lock, sqlite3.connect(self._db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT sku FROM sync_items WHERE run_id = ? AND status IN (?, ?)",
+                    (run_id, sent_statuses[0], sent_statuses[1]),
+                )
+                return {row[0] for row in cursor.fetchall()}
 
         skus: Set[str] = set()
         scan_kwargs = {

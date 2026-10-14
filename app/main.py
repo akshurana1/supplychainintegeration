@@ -126,6 +126,7 @@ def run(
         if current_status in (
             RunStatus.EXPORT_COMPLETE.value,
             RunStatus.SYNCING.value,
+            RunStatus.FAILED.value,
         ):
             summary = sync_catalogue(
                 run_id,

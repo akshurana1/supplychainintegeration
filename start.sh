@@ -5,18 +5,24 @@
 # This script sets up dependencies, boots the external mock services (PIM & WMS),
 # verifies their health, and runs the catalogue synchronisation pipeline.
 #
+# Supports both:
+#   - Docker Compose mode (if Docker Desktop / daemon is running)
+#   - Direct Python mode (via run_mock_services.py fallback if Docker is inactive)
+#
 # Usage:
 #   ./start.sh              # Setup venv, start mocks, run synchronisation pipeline
 #   ./start.sh --test       # Run automated test suite (pytest)
 #   ./start.sh --resume ID  # Resume a previously interrupted run by ID
 #   ./start.sh --mocks-only # Start mock services in background without running sync
-#   ./start.sh --stop       # Stop running mock services (Docker)
+#   ./start.sh --stop       # Stop running mock services
 # ==============================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+PID_FILE=".mock_services.pid"
 
 # ANSI Colors
 BOLD="\033[1m"
@@ -47,12 +53,25 @@ log_step() {
 # ------------------------------------------------------------------------------
 if [[ "${1:-}" == "--stop" ]]; then
     log_step "Stopping mock services..."
-    if command -v docker &>/dev/null && docker compose version &>/dev/null; then
-        docker compose down
-        log_info "Mock services stopped."
-    else
-        log_warn "Docker is not running or not found. No containers to stop."
+
+    # Stop native Python runner if running
+    if [[ -f "$PID_FILE" ]]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID" 2>/dev/null || true
+            pkill -f "run_mock_services.py" 2>/dev/null || true
+            log_info "Stopped background Python mock services (PID $PID)."
+        fi
+        rm -f "$PID_FILE"
     fi
+
+    # Stop Docker Compose if running
+    if command -v docker &>/dev/null && docker compose version &>/dev/null; then
+        docker compose down 2>/dev/null || true
+        log_info "Docker mock services stopped."
+    fi
+
+    log_info "All mock services stopped."
     exit 0
 fi
 
@@ -85,10 +104,10 @@ VENV_PYTHON=".venv/bin/python"
 VENV_PIP=".venv/bin/pip"
 VENV_PYTEST=".venv/bin/pytest"
 
-# Upgrade pip and install requirements if not installed
-if ! "$VENV_PYTHON" -c "import httpx, tenacity, structlog, fastapi" &>/dev/null; then
+# Install requirements if not installed
+if ! "$VENV_PYTHON" -c "import httpx, tenacity, structlog, fastapi, eval_type_backport" &>/dev/null; then
     log_info "Installing dependencies from requirements.txt..."
-    "$VENV_PIP" install -q -r requirements.txt
+    "$VENV_PIP" install -q -r requirements.txt eval-type-backport
 else
     log_info "Dependencies are already installed."
 fi
@@ -103,26 +122,9 @@ if [[ "${1:-}" == "--test" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 4. Start Mock Services (Docker Compose)
+# 4. Start Mock Services (Docker or Native Python fallback)
 # ------------------------------------------------------------------------------
 log_step "Checking mock external services..."
-
-start_docker_mocks() {
-    if ! command -v docker &>/dev/null; then
-        log_error "Docker is not installed or not in PATH."
-        log_error "Docker Desktop is required to run the mock PIM and WMS APIs."
-        return 1
-    fi
-
-    if ! docker info &>/dev/null; then
-        log_error "Docker daemon is not running. Please start Docker Desktop."
-        return 1
-    fi
-
-    log_info "Starting mock services via Docker Compose..."
-    docker compose up -d --build
-    return 0
-}
 
 wait_for_service() {
     local url="$1"
@@ -145,26 +147,30 @@ wait_for_service() {
     return 1
 }
 
-# Check if mock services are already running on ports 8001 and 8002
 PIM_HEALTH="http://localhost:8001/health"
 WMS_HEALTH="http://localhost:8002/health"
 
 if curl -s -f "$PIM_HEALTH" &>/dev/null && curl -s -f "$WMS_HEALTH" &>/dev/null; then
     log_info "Mock services are already running and healthy."
 else
-    if start_docker_mocks; then
-        wait_for_service "$PIM_HEALTH" "Product API (PIM)"
-        wait_for_service "$WMS_HEALTH" "Warehouse API (WMS)"
-    else
-        log_warn "Could not start mock services via Docker."
-        log_warn "If running locally without Docker, ensure services are accessible at:"
-        log_warn "  - Product API:   http://localhost:8001"
-        log_warn "  - Warehouse API: http://localhost:8002"
-        log_warn "You can still run automated tests without Docker using: ./start.sh --test"
-        if [[ "${1:-}" != "--mocks-only" ]]; then
-            exit 1
+    DOCKER_AVAILABLE=false
+    if command -v docker &>/dev/null; then
+        if docker info &>/dev/null; then
+            DOCKER_AVAILABLE=true
         fi
     fi
+
+    if [[ "$DOCKER_AVAILABLE" == "true" ]]; then
+        log_info "Docker daemon detected. Starting mock services via Docker Compose..."
+        docker compose up -d --build
+    else
+        log_info "Docker daemon not running. Launching mock services natively via run_mock_services.py..."
+        nohup "$VENV_PYTHON" run_mock_services.py > runtime/mock_services.log 2>&1 &
+        echo $! > "$PID_FILE"
+    fi
+
+    wait_for_service "$PIM_HEALTH" "Product API (PIM)"
+    wait_for_service "$WMS_HEALTH" "Warehouse API (WMS)"
 fi
 
 if [[ "${1:-}" == "--mocks-only" ]]; then
