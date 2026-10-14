@@ -72,13 +72,19 @@ def transform(row: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dict with WMS field names.
     """
+    sku = str(row.get("id") or row.get("sku") or "").strip()
+    try:
+        price = float(row["price"]) if "price" in row else float(row.get("selling_price", 0.0))
+    except (ValueError, TypeError):
+        price = 0.0
+
     return {
-        "sku": row["id"],
-        "description": row["name"],
-        "selling_price": float(row["price"]),
-        "currency": row["currency"],
-        "category_code": row["category"],
-        "source_updated_at": row["updated_at"],
+        "sku": sku if sku else None,
+        "description": row.get("name") or row.get("description") or "",
+        "selling_price": price,
+        "currency": row.get("currency", "INR"),
+        "category_code": row.get("category") or row.get("category_code") or "GENERAL",
+        "source_updated_at": row.get("updated_at") or row.get("source_updated_at") or "",
     }
 
 
@@ -194,7 +200,7 @@ def sync_catalogue(
                 for rej in result.rejected:
                     state_store.update_item_status(
                         run_id,
-                        rej.get("sku", "unknown"),
+                        rej.get("sku") or "unknown",
                         ItemStatus.REJECTED,
                         reason=rej.get("reason"),
                     )

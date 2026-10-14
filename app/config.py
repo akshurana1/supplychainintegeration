@@ -87,7 +87,7 @@ class Settings(BaseSettings):
 
     # ── Retry / resilience ───────────────────────────────────────────────
     MAX_RETRIES: int = Field(
-        default=5,
+        default=10,
         ge=1,
         description="Maximum number of retries for transient failures",
     )

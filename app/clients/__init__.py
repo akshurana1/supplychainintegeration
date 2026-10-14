@@ -162,7 +162,7 @@ class ResilientClient:
         """
 
         @retry(
-            retry=retry_if_exception_type(TransientAPIError),
+            retry=retry_if_exception_type((TransientAPIError, httpx.TransportError)),
             stop=stop_after_attempt(self._max_retries),
             wait=wait_exponential_jitter(
                 initial=self._base_delay,

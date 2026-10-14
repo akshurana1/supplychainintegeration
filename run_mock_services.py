@@ -8,12 +8,57 @@ Loads the mock services from:
 Does NOT modify the mock service source code on disk. Uses in-memory
 loading with eval-type-backport to ensure compatibility across all
 Python environments (3.9 through 3.12+).
+
+Also fixes the Starlette JSONResponse signature compatibility issue
+(where the mock service passes status_code as first positional argument
+instead of content) so that rate limits (429) and transient errors (503)
+are returned as their real HTTP status codes with Retry-After headers
+instead of crashing into spurious 500 Internal Server Errors.
 """
 
 import sys
 import multiprocessing
 import uvicorn
 import eval_type_backport
+import fastapi.responses
+import starlette.responses
+
+# Compatibility patch for Starlette/FastAPI JSONResponse signature
+_orig_json_init = starlette.responses.JSONResponse.__init__
+
+
+def _patched_json_init(
+    self,
+    content=None,
+    status_code=200,
+    headers=None,
+    media_type=None,
+    background=None,
+):
+    if isinstance(content, int) and isinstance(status_code, (dict, list, str)):
+        # Correct inverted arguments from mock service:
+        # JSONResponse(429, {"detail": ...}) -> JSONResponse(content={"detail": ...}, status_code=429)
+        _orig_json_init(
+            self,
+            content=status_code,
+            status_code=content,
+            headers=headers,
+            media_type=media_type,
+            background=background,
+        )
+    else:
+        _orig_json_init(
+            self,
+            content=content,
+            status_code=status_code,
+            headers=headers,
+            media_type=media_type,
+            background=background,
+        )
+
+
+starlette.responses.JSONResponse.__init__ = _patched_json_init
+fastapi.responses.JSONResponse.__init__ = _patched_json_init
 
 
 def load_fastapi_app(filepath: str):
