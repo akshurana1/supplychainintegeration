@@ -1,0 +1,24 @@
+# ==============================================================================
+# Example Terraform Variables Configuration
+# ==============================================================================
+# Copy this file to terraform.tfvars or pass via CLI to configure environment
+# ==============================================================================
+
+aws_region        = "ap-south-1"
+environment       = "dev"
+project_name      = "catalogue-sync"
+
+product_api_url   = "https://api.pim.internal"
+warehouse_api_url = "https://api.wms.internal"
+
+s3_retention_days = 90
+lambda_memory     = 256
+lambda_timeout    = 300
+sync_concurrency  = 5
+
+ecs_cpu           = 256
+ecs_memory        = 512
+ecs_image         = "123456789012.dkr.ecr.ap-south-1.amazonaws.com/catalogue-sync:latest"
+
+log_retention_days = 30
+alert_email        = "ops-alerts@example.com"
