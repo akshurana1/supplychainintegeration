@@ -3,17 +3,19 @@
 # Product Catalogue Integration — Service & Pipeline Runner
 # ==============================================================================
 # This script sets up dependencies, boots the external mock services (PIM & WMS),
-# verifies their health, and runs the catalogue synchronisation pipeline.
+# verifies their health, cleans up previous migration/run state on fresh starts,
+# and runs the catalogue synchronisation pipeline.
 #
 # Supports both:
 #   - Docker Compose mode (if Docker Desktop / daemon is running)
 #   - Direct Python mode (via run_mock_services.py fallback if Docker is inactive)
 #
 # Usage:
-#   ./start.sh              # Setup venv, start mocks, run synchronisation pipeline
+#   ./start.sh              # Clean previous migration, start mocks, run pipeline
+#   ./start.sh --clean      # Clean up previous migration data and state only
 #   ./start.sh --test       # Run automated test suite (pytest)
-#   ./start.sh --resume ID  # Resume a previously interrupted run by ID
-#   ./start.sh --mocks-only # Start mock services in background without running sync
+#   ./start.sh --resume ID  # Resume an interrupted run by ID (preserves state)
+#   ./start.sh --mocks-only # Clean previous data and start mock services only
 #   ./start.sh --stop       # Stop running mock services
 # ==============================================================================
 
@@ -48,8 +50,25 @@ log_step() {
     echo -e "\n${BOLD}${CYAN}==>${NC} ${BOLD}$1${NC}"
 }
 
+clean_previous_migration() {
+    log_step "Cleaning up previous migration data, database state, and exports..."
+    if [[ -d "runtime/exports" ]]; then
+        rm -rf runtime/exports/*.csv runtime/exports/state.db* runtime/exports/exports 2>/dev/null || true
+    fi
+    mkdir -p runtime/exports
+    log_info "Previous migration and state data cleaned up successfully."
+}
+
 # ------------------------------------------------------------------------------
-# 1. Handle --stop flag
+# 1. Handle --clean flag
+# ------------------------------------------------------------------------------
+if [[ "${1:-}" == "--clean" ]]; then
+    clean_previous_migration
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# 2. Handle --stop flag
 # ------------------------------------------------------------------------------
 if [[ "${1:-}" == "--stop" ]]; then
     log_step "Stopping mock services..."
@@ -76,7 +95,7 @@ if [[ "${1:-}" == "--stop" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Python Virtual Environment & Dependencies
+# 3. Python Virtual Environment & Dependencies
 # ------------------------------------------------------------------------------
 log_step "Checking Python environment..."
 
@@ -113,7 +132,7 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 3. Handle --test flag
+# 4. Handle --test flag
 # ------------------------------------------------------------------------------
 if [[ "${1:-}" == "--test" ]]; then
     log_step "Running test suite (pytest)..."
@@ -122,7 +141,16 @@ if [[ "${1:-}" == "--test" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 4. Start Mock Services (Docker or Native Python fallback)
+# 5. Clean Previous Migration Data (on fresh start)
+# ------------------------------------------------------------------------------
+if [[ "${1:-}" != "--resume" ]]; then
+    clean_previous_migration
+else
+    log_info "Resume mode detected. Preserving previous migration state for run resumption."
+fi
+
+# ------------------------------------------------------------------------------
+# 6. Start Mock Services (Docker or Native Python fallback)
 # ------------------------------------------------------------------------------
 log_step "Checking mock external services..."
 
@@ -181,7 +209,7 @@ if [[ "${1:-}" == "--mocks-only" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 5. Run the Catalogue Integration Pipeline
+# 7. Run the Catalogue Integration Pipeline
 # ------------------------------------------------------------------------------
 log_step "Running PIM to WMS integration pipeline..."
 
@@ -194,7 +222,7 @@ if [[ "${1:-}" == "--resume" ]]; then
     "$VENV_PYTHON" -m app.main --resume "$2"
 else
     log_info "Starting fresh synchronisation run..."
-    "$VENV_PYTHON" -m app.main
+    "$VENV_PYTHON" -m app.main --clean
 fi
 
 log_step "Pipeline execution complete!"

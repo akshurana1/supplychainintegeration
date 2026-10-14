@@ -50,12 +50,15 @@ def generate_run_id() -> str:
 def run(
     *,
     resume_run_id: Optional[str] = None,
+    clean_previous: bool = False,
 ) -> SyncSummary:
     """Execute the full PIM → WMS synchronisation pipeline.
 
     Args:
         resume_run_id: If provided, resume a previously interrupted run
             instead of starting fresh.
+        clean_previous: If True and starting a fresh run, clean up previous
+            state data and records.
 
     Returns:
         A ``SyncSummary`` with the outcome of the sync phase.
@@ -65,6 +68,10 @@ def run(
     logger = get_logger("orchestrator")
 
     state_store = StateStore(settings)
+
+    if clean_previous and not resume_run_id:
+        logger.info("cleaning_previous_state")
+        state_store.clean_all()
 
     # ── Determine run ID and phase ───────────────────────────────────
     if resume_run_id:
@@ -193,10 +200,15 @@ def main() -> None:
         metavar="RUN_ID",
         help="Resume a previously interrupted run by its run ID",
     )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Clean up previous migration and state data before running",
+    )
     args = parser.parse_args()
 
     try:
-        summary = run(resume_run_id=args.resume)
+        summary = run(resume_run_id=args.resume, clean_previous=args.clean)
         if not summary.is_success:
             sys.exit(1)
     except Exception:

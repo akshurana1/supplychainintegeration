@@ -133,6 +133,18 @@ class StateStore:
             """)
             conn.commit()
 
+    def clean_all(self) -> None:
+        """Clean up and reset all previous run state and item records."""
+        if self._use_local:
+            with self._lock, sqlite3.connect(self._db_path) as conn:
+                conn.execute("DELETE FROM sync_runs")
+                conn.execute("DELETE FROM sync_items")
+                conn.commit()
+                conn.execute("VACUUM")
+            logger.info("local_state_store_cleaned", db_path=self._db_path)
+        else:
+            logger.info("aws_state_store_clean_requested")
+
     # ── Run operations ───────────────────────────────────────────────
 
     def create_run(self, run_id: str) -> RunRecord:
