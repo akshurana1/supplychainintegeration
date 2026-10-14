@@ -52,11 +52,32 @@ Designed and engineered to scale from 10,000 to **1,000,000 products** while str
 
 ## Local Development & Testing
 
-### Prerequisites
-- Python 3.9+ (Python 3.11+ recommended)
-- Docker & Docker Compose (for running mock external services)
+### Quick Start (One Command)
+You can set up dependencies, launch mock services, and run the pipeline using `start.sh`:
 
-### 1. Setup Virtual Environment & Install Dependencies
+```bash
+# Make executable (if needed)
+chmod +x start.sh
+
+# 1. Run all 44 automated tests
+./start.sh --test
+
+# 2. Start mock services in background (requires Docker)
+./start.sh --mocks-only
+
+# 3. Run full sync pipeline (or boots mocks automatically if Docker is running)
+./start.sh
+
+# 4. Resume an interrupted run
+./start.sh --resume <RUN_ID>
+
+# 5. Stop running mock services
+./start.sh --stop
+```
+
+### Manual Setup & Execution
+If you prefer running commands manually:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
