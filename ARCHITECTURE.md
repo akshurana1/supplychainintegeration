@@ -34,28 +34,29 @@ flowchart TD
     end
 
     subgraph Phase1 ["Phase 1: Catalogue Export (ECS Fargate)"]
-        SF -->|Task 1: RunTask| Fargate["ECS Fargate Task (app.services.catalogue_export)"]
-        PIM["External PIM API (10 req/s, 500/page)"] <-->|Paginated GET + API Key| Fargate
+        SF -->|Task 1: RunTask| Fargate["ECS Fargate Task (catalogue_export)"]
+        PIM["External PIM API (10 req/s, 500/page)"] -->|Paginated GET| Fargate
         Fargate -->|Checkpoints last_export_page| DDB_Runs[("DynamoDB: sync_runs")]
-        Fargate -->|Stream CSV Upload| S3[("Amazon S3 Bucket: exports/{run_id}/catalogue.csv")]
+        Fargate -->|Stream CSV Upload| S3[("Amazon S3 Bucket: exports/run_id/catalogue.csv")]
     end
 
     subgraph Phase2 ["Phase 2: Chunking & Queuing (Lambda)"]
-        SF -->|Task 2: Invoke| ChunkLambda["Chunking Lambda (app.services.chunking)"]
+        SF -->|Task 2: Invoke| ChunkLambda["Chunking Lambda (chunking)"]
         S3 -->|Read CSV Stream| ChunkLambda
         ChunkLambda -->|Enqueue Batches of 100| SQS["Amazon SQS Queue: wms-sync-batches"]
         SQS -.->|Failed Batches after 5 retries| DLQ["Amazon SQS DLQ: wms-sync-batches-dlq"]
     end
 
     subgraph Phase3 ["Phase 3: Batch Ingestion (Lambda + SQS)"]
-        SQS -->|Event Source Mapping (Concurrency Limit: 20)| SyncLambda["Sync Worker Lambdas (app.services.warehouse_sync)"]
-        SyncLambda <-->|Pre-Check & Mark SENT| DDB_Items[("DynamoDB: sync_items")]
-        SyncLambda <-->|POST /products/batch (20 req/s)| WMS["External WMS API (100 items/batch)"]
+        SQS -->|Event Source Mapping - Concurrency Limit 20| SyncLambda["Sync Worker Lambdas (warehouse_sync)"]
+        SyncLambda -->|Pre-Check and Mark SENT| DDB_Items[("DynamoDB: sync_items")]
+        SyncLambda -->|POST products/batch - 20 req/s| WMS["External WMS API (100 items/batch)"]
+        WMS -->|Accepted or Rejected Response| SyncLambda
         SyncLambda -->|Update ACCEPTED / REJECTED / FAILED| DDB_Items
     end
 
     subgraph Phase4 ["Phase 4: Finalization & Metrics (Lambda)"]
-        SF -->|Task 3: Invoke when SQS Empty| FinalLambda["Finalize Lambda (app.main.finalize)"]
+        SF -->|Task 3: Invoke when SQS Empty| FinalLambda["Finalize Lambda (finalize)"]
         DDB_Items -->|Query Summary Counts| FinalLambda
         FinalLambda -->|Set Final Run Status| DDB_Runs
         FinalLambda -->|Emit Custom Metrics| CW["Amazon CloudWatch (Metrics & Alarms)"]
