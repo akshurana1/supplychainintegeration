@@ -13,7 +13,7 @@ be sent twice" requirement.  Two tables are used:
     sync service checks this table to skip already-processed SKUs.
 
 In local mode, SQLite persists the state locally to disk (defaulting to
-``runtime/state.db``) so that runs can be inspected and resumed across
+``runtime/exports/state.db``) so that runs can be inspected and resumed across
 separate process executions without requiring AWS DynamoDB.
 """
 
@@ -257,6 +257,22 @@ class StateStore:
 
         resp = self._runs_table.get_item(Key={"run_id": run_id})
         return resp.get("Item")
+
+    def list_runs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """List sync runs ordered by start time descending."""
+        if self._use_local:
+            with self._lock, sqlite3.connect(self._db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT * FROM sync_runs ORDER BY started_at DESC LIMIT ?",
+                    (limit,),
+                )
+                return [dict(row) for row in cursor.fetchall()]
+
+        resp = self._runs_table.scan(Limit=limit)
+        items = resp.get("Items", [])
+        return sorted(items, key=lambda x: x.get("started_at", ""), reverse=True)
 
     # ── Item (per-product) operations ────────────────────────────────
 

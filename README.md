@@ -59,19 +59,25 @@ You can set up dependencies, launch mock services, and run the pipeline using `s
 # Make executable (if needed)
 chmod +x start.sh
 
-# 1. Run all 44 automated tests
+# 1. Run all 45 automated tests
 ./start.sh --test
 
-# 2. Start mock services in background (requires Docker)
+# 2. Start mock services in background (Docker or native Python fallback)
 ./start.sh --mocks-only
 
-# 3. Run full sync pipeline (or boots mocks automatically if Docker is running)
+# 3. Run full sync pipeline (preserves run history in state store)
 ./start.sh
 
-# 4. Resume an interrupted run
+# 4. View all sync runs and their statuses
+./start.sh --list
+
+# 5. Resume an interrupted run
 ./start.sh --resume <RUN_ID>
 
-# 5. Stop running mock services
+# 6. Clean up previous migration and database state
+./start.sh --clean
+
+# 7. Stop running mock services
 ./start.sh --stop
 ```
 

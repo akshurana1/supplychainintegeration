@@ -11,11 +11,13 @@
 #   - Direct Python mode (via run_mock_services.py fallback if Docker is inactive)
 #
 # Usage:
-#   ./start.sh              # Clean previous migration, start mocks, run pipeline
+#   ./start.sh              # Start mocks and run pipeline (preserves run history)
+#   ./start.sh --list       # List all sync runs and their statuses
 #   ./start.sh --clean      # Clean up previous migration data and state only
+#   ./start.sh --clean-run  # Clean previous state and start a fresh run
 #   ./start.sh --test       # Run automated test suite (pytest)
 #   ./start.sh --resume ID  # Resume an interrupted run by ID (preserves state)
-#   ./start.sh --mocks-only # Clean previous data and start mock services only
+#   ./start.sh --mocks-only # Start mock services only
 #   ./start.sh --stop       # Stop running mock services
 # ==============================================================================
 
@@ -53,10 +55,11 @@ log_step() {
 clean_previous_migration() {
     log_step "Cleaning up previous migration data, database state, and exports..."
     if [[ -d "runtime/exports" ]]; then
-        rm -rf runtime/exports/*.csv runtime/exports/state.db* runtime/exports/exports 2>/dev/null || true
+        rm -rf runtime/exports/* 2>/dev/null || true
     fi
+    rm -rf runtime/*.db* runtime/state.db* 2>/dev/null || true
     mkdir -p runtime/exports
-    log_info "Previous migration and state data cleaned up successfully."
+    log_info "State database (state.db) and export files cleaned up successfully."
 }
 
 # ------------------------------------------------------------------------------
@@ -141,12 +144,21 @@ if [[ "${1:-}" == "--test" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 5. Clean Previous Migration Data (on fresh start)
+# 5. Handle --list / --status flag
 # ------------------------------------------------------------------------------
-if [[ "${1:-}" != "--resume" ]]; then
+if [[ "${1:-}" == "--list" || "${1:-}" == "--status" ]]; then
+    log_step "Fetching sync runs from state store..."
+    "$VENV_PYTHON" -m app.main --list-runs
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# 6. Clean Previous Migration Data (only when --clean-run requested)
+# ------------------------------------------------------------------------------
+if [[ "${1:-}" == "--clean-run" ]]; then
     clean_previous_migration
 else
-    log_info "Resume mode detected. Preserving previous migration state for run resumption."
+    log_info "Preserving previous migration and state data in state store."
 fi
 
 # ------------------------------------------------------------------------------
@@ -220,9 +232,12 @@ if [[ "${1:-}" == "--resume" ]]; then
     fi
     log_info "Resuming sync run: $2"
     "$VENV_PYTHON" -m app.main --resume "$2"
-else
-    log_info "Starting fresh synchronisation run..."
+elif [[ "${1:-}" == "--clean-run" ]]; then
+    log_info "Starting clean synchronisation run..."
     "$VENV_PYTHON" -m app.main --clean
+else
+    log_info "Starting synchronisation run (preserving history)..."
+    "$VENV_PYTHON" -m app.main
 fi
 
 log_step "Pipeline execution complete!"

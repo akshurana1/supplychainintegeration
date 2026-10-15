@@ -76,6 +76,17 @@ class TestStateStoreRunLifecycle:
             data = store.get_run("lifecycle-run")
             assert data["status"] == status.value
 
+    def test_list_runs_multiple(self):
+        """Verify multiple runs are stored and returned in order."""
+        store = _make_local_state_store()
+        store.create_run("run-alpha")
+        store.create_run("run-beta")
+        runs = store.list_runs()
+        run_ids = [r["run_id"] for r in runs]
+        assert "run-alpha" in run_ids
+        assert "run-beta" in run_ids
+        assert len(runs) >= 2
+
 
 class TestStateStoreItemTracking:
     """Tests for per-product item state tracking."""

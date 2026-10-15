@@ -205,7 +205,32 @@ def main() -> None:
         action="store_true",
         help="Clean up previous migration and state data before running",
     )
+    parser.add_argument(
+        "--list-runs",
+        action="store_true",
+        help="List all sync runs and their statuses in the state store",
+    )
     args = parser.parse_args()
+
+    if args.list_runs:
+        state_store = StateStore(get_settings())
+        runs = state_store.list_runs()
+        if not runs:
+            print("No sync runs found in state store.")
+            return
+        print(f"\n{'RUN ID':<30} {'STATUS':<16} {'PRODUCTS':<10} {'ACCEPTED':<10} {'REJECTED':<10} {'FAILED':<10}")
+        print("-" * 92)
+        for r in runs:
+            print(
+                f"{r.get('run_id', ''):<30} "
+                f"{r.get('status', ''):<16} "
+                f"{r.get('total_products', 0):<10} "
+                f"{r.get('total_accepted', 0):<10} "
+                f"{r.get('total_rejected', 0):<10} "
+                f"{r.get('total_failed', 0):<10}"
+            )
+        print("")
+        return
 
     try:
         summary = run(resume_run_id=args.resume, clean_previous=args.clean)
